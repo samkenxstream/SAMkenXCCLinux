@@ -178,7 +178,10 @@ activate_next:
 	if (!first)
 		return;
 
-	if (WARN_ON_ONCE(j1939_session_activate(first))) {
+	if (j1939_session_activate(first)) {
+		netdev_warn_once(first->priv->ndev,
+				 "%s: 0x%p: Identical session is already activated.\n",
+				 __func__, first);
 		first->err = -EBUSY;
 		goto activate_next;
 	} else {
@@ -186,7 +189,7 @@ activate_next:
 		int time_ms = 0;
 
 		if (err)
-			time_ms = 10 + prandom_u32_max(16);
+			time_ms = 10 + get_random_u32_below(16);
 
 		j1939_tp_schedule_txtimer(first, time_ms);
 	}

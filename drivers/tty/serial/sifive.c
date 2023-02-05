@@ -4,16 +4,6 @@
  * Copyright (C) 2018 Paul Walmsley <paul@pwsan.com>
  * Copyright (C) 2018-2019 SiFive
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  * Based partially on:
  * - drivers/tty/serial/pxa.c
  * - drivers/tty/serial/amba-pl011.c
@@ -298,33 +288,12 @@ static void __ssp_transmit_char(struct sifive_serial_port *ssp, int ch)
  */
 static void __ssp_transmit_chars(struct sifive_serial_port *ssp)
 {
-	struct circ_buf *xmit = &ssp->port.state->xmit;
-	int count;
+	u8 ch;
 
-	if (ssp->port.x_char) {
-		__ssp_transmit_char(ssp, ssp->port.x_char);
-		ssp->port.icount.tx++;
-		ssp->port.x_char = 0;
-		return;
-	}
-	if (uart_circ_empty(xmit) || uart_tx_stopped(&ssp->port)) {
-		sifive_serial_stop_tx(&ssp->port);
-		return;
-	}
-	count = SIFIVE_TX_FIFO_DEPTH;
-	do {
-		__ssp_transmit_char(ssp, xmit->buf[xmit->tail]);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		ssp->port.icount.tx++;
-		if (uart_circ_empty(xmit))
-			break;
-	} while (--count > 0);
-
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(&ssp->port);
-
-	if (uart_circ_empty(xmit))
-		sifive_serial_stop_tx(&ssp->port);
+	uart_port_tx_limited(&ssp->port, ch, SIFIVE_TX_FIFO_DEPTH,
+		true,
+		__ssp_transmit_char(ssp, ch),
+		({}));
 }
 
 /**
@@ -656,7 +625,7 @@ static int sifive_serial_clk_notifier(struct notifier_block *nb,
 
 static void sifive_serial_set_termios(struct uart_port *port,
 				      struct ktermios *termios,
-				      struct ktermios *old)
+				      const struct ktermios *old)
 {
 	struct sifive_serial_port *ssp = port_to_sifive_serial_port(port);
 	unsigned long flags;
@@ -955,7 +924,7 @@ static int sifive_serial_probe(struct platform_device *pdev)
 		return PTR_ERR(base);
 	}
 
-	clk = devm_clk_get(&pdev->dev, NULL);
+	clk = devm_clk_get_enabled(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
 		dev_err(&pdev->dev, "unable to find controller clock\n");
 		return PTR_ERR(clk);

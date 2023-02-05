@@ -75,7 +75,7 @@ static ssize_t __blkdev_direct_IO_simple(struct kiocb *iocb,
 
 	if (iov_iter_rw(iter) == READ) {
 		bio_init(&bio, bdev, vecs, nr_pages, REQ_OP_READ);
-		if (iter_is_iovec(iter))
+		if (user_backed_iter(iter))
 			should_dirty = true;
 	} else {
 		bio_init(&bio, bdev, vecs, nr_pages, dio_bio_write_op(iocb));
@@ -204,7 +204,7 @@ static ssize_t __blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter,
 	}
 
 	dio->size = 0;
-	if (is_read && iter_is_iovec(iter))
+	if (is_read && user_backed_iter(iter))
 		dio->flags |= DIO_SHOULD_DIRTY;
 
 	blk_start_plug(&plug);
@@ -335,7 +335,7 @@ static ssize_t __blkdev_direct_IO_async(struct kiocb *iocb,
 	dio->size = bio->bi_iter.bi_size;
 
 	if (is_read) {
-		if (iter_is_iovec(iter)) {
+		if (user_backed_iter(iter)) {
 			dio->flags |= DIO_SHOULD_DIRTY;
 			bio_set_pages_dirty(bio);
 		}
@@ -405,12 +405,6 @@ static int blkdev_write_end(struct file *file, struct address_space *mapping,
 	return ret;
 }
 
-static int blkdev_writepages(struct address_space *mapping,
-			     struct writeback_control *wbc)
-{
-	return generic_writepages(mapping, wbc);
-}
-
 const struct address_space_operations def_blk_aops = {
 	.dirty_folio	= block_dirty_folio,
 	.invalidate_folio = block_invalidate_folio,
@@ -419,7 +413,6 @@ const struct address_space_operations def_blk_aops = {
 	.writepage	= blkdev_writepage,
 	.write_begin	= blkdev_write_begin,
 	.write_end	= blkdev_write_end,
-	.writepages	= blkdev_writepages,
 	.direct_IO	= blkdev_direct_IO,
 	.migrate_folio	= buffer_migrate_folio_norefs,
 	.is_dirty_writeback = buffer_check_dirty_writeback,

@@ -226,12 +226,12 @@ xlog_ticket_reservation(
 	if (head == &log->l_write_head) {
 		ASSERT(tic->t_flags & XLOG_TIC_PERM_RESERV);
 		return tic->t_unit_res;
-	} else {
-		if (tic->t_flags & XLOG_TIC_PERM_RESERV)
-			return tic->t_unit_res * tic->t_cnt;
-		else
-			return tic->t_unit_res;
 	}
+
+	if (tic->t_flags & XLOG_TIC_PERM_RESERV)
+		return tic->t_unit_res * tic->t_cnt;
+
+	return tic->t_unit_res;
 }
 
 STATIC bool
@@ -644,12 +644,14 @@ xfs_log_mount(
 	int		min_logfsbs;
 
 	if (!xfs_has_norecovery(mp)) {
-		xfs_notice(mp, "Mounting V%d Filesystem",
-			   XFS_SB_VERSION_NUM(&mp->m_sb));
+		xfs_notice(mp, "Mounting V%d Filesystem %pU",
+			   XFS_SB_VERSION_NUM(&mp->m_sb),
+			   &mp->m_sb.sb_uuid);
 	} else {
 		xfs_notice(mp,
-"Mounting V%d filesystem in no-recovery mode. Filesystem will be inconsistent.",
-			   XFS_SB_VERSION_NUM(&mp->m_sb));
+"Mounting V%d filesystem %pU in no-recovery mode. Filesystem will be inconsistent.",
+			   XFS_SB_VERSION_NUM(&mp->m_sb),
+			   &mp->m_sb.sb_uuid);
 		ASSERT(xfs_is_readonly(mp));
 	}
 
@@ -887,6 +889,23 @@ xlog_force_iclog(
 }
 
 /*
+ * Cycle all the iclogbuf locks to make sure all log IO completion
+ * is done before we tear down these buffers.
+ */
+static void
+xlog_wait_iclog_completion(struct xlog *log)
+{
+	int		i;
+	struct xlog_in_core	*iclog = log->l_iclog;
+
+	for (i = 0; i < log->l_iclog_bufs; i++) {
+		down(&iclog->ic_sema);
+		up(&iclog->ic_sema);
+		iclog = iclog->ic_next;
+	}
+}
+
+/*
  * Wait for the iclog and all prior iclogs to be written disk as required by the
  * log force state machine. Waiting on ic_force_wait ensures iclog completions
  * have been ordered and callbacks run before we are woken here, hence
@@ -1110,6 +1129,14 @@ xfs_log_unmount(
 	struct xfs_mount	*mp)
 {
 	xfs_log_clean(mp);
+
+	/*
+	 * If shutdown has come from iclog IO context, the log
+	 * cleaning will have been skipped and so we need to wait
+	 * for the iclog to complete shutdown processing before we
+	 * tear anything down.
+	 */
+	xlog_wait_iclog_completion(mp->m_log);
 
 	xfs_buftarg_drain(mp->m_ddev_targp);
 
@@ -1925,9 +1952,17 @@ xlog_write_iclog(
 		 * device cache first to ensure all metadata writeback covered
 		 * by the LSN in this iclog is on stable storage. This is slow,
 		 * but it *must* complete before we issue the external log IO.
+		 *
+		 * If the flush fails, we cannot conclude that past metadata
+		 * writeback from the log succeeded.  Repeating the flush is
+		 * not possible, hence we must shut down with log IO error to
+		 * avoid shutdown re-entering this path and erroring out again.
 		 */
-		if (log->l_targ != log->l_mp->m_ddev_targp)
-			blkdev_issue_flush(log->l_mp->m_ddev_targp->bt_bdev);
+		if (log->l_targ != log->l_mp->m_ddev_targp &&
+		    blkdev_issue_flush(log->l_mp->m_ddev_targp->bt_bdev)) {
+			xlog_force_shutdown(log, SHUTDOWN_LOG_IO_ERROR);
+			return;
+		}
 	}
 	if (iclog->ic_flags & XLOG_ICL_NEED_FUA)
 		iclog->ic_bio.bi_opf |= REQ_FUA;
@@ -2104,17 +2139,6 @@ xlog_dealloc_log(
 {
 	xlog_in_core_t	*iclog, *next_iclog;
 	int		i;
-
-	/*
-	 * Cycle all the iclogbuf locks to make sure all log IO completion
-	 * is done before we tear down these buffers.
-	 */
-	iclog = log->l_iclog;
-	for (i = 0; i < log->l_iclog_bufs; i++) {
-		down(&iclog->ic_sema);
-		up(&iclog->ic_sema);
-		iclog = iclog->ic_next;
-	}
 
 	/*
 	 * Destroy the CIL after waiting for iclog IO completion because an
@@ -3536,7 +3560,7 @@ xlog_ticket_alloc(
 	tic->t_curr_res		= unit_res;
 	tic->t_cnt		= cnt;
 	tic->t_ocnt		= cnt;
-	tic->t_tid		= prandom_u32();
+	tic->t_tid		= get_random_u32();
 	if (permanent)
 		tic->t_flags |= XLOG_TIC_PERM_RESERV;
 

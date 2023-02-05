@@ -489,7 +489,7 @@ static struct vfsmount *mq_create_mount(struct ipc_namespace *ns)
 
 static void init_once(void *foo)
 {
-	struct mqueue_inode_info *p = (struct mqueue_inode_info *) foo;
+	struct mqueue_inode_info *p = foo;
 
 	inode_init_once(&p->vfs_inode);
 }
@@ -986,8 +986,7 @@ SYSCALL_DEFINE1(mq_unlink, const char __user *, u_name)
 
 out_unlock:
 	inode_unlock(d_inode(mnt->mnt_root));
-	if (inode)
-		iput(inode);
+	iput(inode);
 	mnt_drop_write(mnt);
 out_name:
 	putname(name);
@@ -1727,7 +1726,8 @@ static int __init init_mqueue_fs(void)
 
 	if (!setup_mq_sysctls(&init_ipc_ns)) {
 		pr_warn("sysctl registration failed\n");
-		return -ENOMEM;
+		error = -ENOMEM;
+		goto out_kmem;
 	}
 
 	error = register_filesystem(&mqueue_fs_type);
@@ -1745,6 +1745,8 @@ static int __init init_mqueue_fs(void)
 out_filesystem:
 	unregister_filesystem(&mqueue_fs_type);
 out_sysctl:
+	retire_mq_sysctls(&init_ipc_ns);
+out_kmem:
 	kmem_cache_destroy(mqueue_inode_cachep);
 	return error;
 }

@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
+#include <dt-bindings/interconnect/qcom,icc.h>
 
 /* UART specific GENI registers */
 #define SE_UART_LOOPBACK_CFG		0x22c
@@ -863,9 +864,10 @@ out_unlock:
 	return IRQ_HANDLED;
 }
 
-static void get_tx_fifo_size(struct qcom_geni_serial_port *port)
+static int setup_fifos(struct qcom_geni_serial_port *port)
 {
 	struct uart_port *uport;
+	u32 old_rx_fifo_depth = port->rx_fifo_depth;
 
 	uport = &port->uport;
 	port->tx_fifo_depth = geni_se_get_tx_fifo_depth(&port->se);
@@ -873,6 +875,16 @@ static void get_tx_fifo_size(struct qcom_geni_serial_port *port)
 	port->rx_fifo_depth = geni_se_get_rx_fifo_depth(&port->se);
 	uport->fifosize =
 		(port->tx_fifo_depth * port->tx_fifo_width) / BITS_PER_BYTE;
+
+	if (port->rx_fifo && (old_rx_fifo_depth != port->rx_fifo_depth) && port->rx_fifo_depth) {
+		port->rx_fifo = devm_krealloc(uport->dev, port->rx_fifo,
+					      port->rx_fifo_depth * sizeof(u32),
+					      GFP_KERNEL);
+		if (!port->rx_fifo)
+			return -ENOMEM;
+	}
+
+	return 0;
 }
 
 
@@ -887,6 +899,7 @@ static int qcom_geni_serial_port_setup(struct uart_port *uport)
 	u32 rxstale = DEFAULT_BITS_PER_CHAR * STALE_TIMEOUT;
 	u32 proto;
 	u32 pin_swap;
+	int ret;
 
 	proto = geni_se_read_proto(&port->se);
 	if (proto != GENI_SE_UART) {
@@ -896,7 +909,9 @@ static int qcom_geni_serial_port_setup(struct uart_port *uport)
 
 	qcom_geni_serial_stop_rx(uport);
 
-	get_tx_fifo_size(port);
+	ret = setup_fifos(port);
+	if (ret)
+		return ret;
 
 	writel(rxstale, uport->membase + SE_UART_RX_STALE_CNT);
 
@@ -923,6 +938,7 @@ static int qcom_geni_serial_port_setup(struct uart_port *uport)
 			       false, true, true);
 	geni_se_init(&port->se, UART_RX_WM, port->rx_fifo_depth - 2);
 	geni_se_select_mode(&port->se, GENI_SE_FIFO);
+	qcom_geni_serial_start_rx(uport);
 	port->setup = true;
 
 	return 0;
@@ -943,58 +959,70 @@ static int qcom_geni_serial_startup(struct uart_port *uport)
 	return 0;
 }
 
+static unsigned long find_clk_rate_in_tol(struct clk *clk, unsigned int desired_clk,
+			unsigned int *clk_div, unsigned int percent_tol)
+{
+	unsigned long freq;
+	unsigned long div, maxdiv;
+	u64 mult;
+	unsigned long offset, abs_tol, achieved;
+
+	abs_tol = div_u64((u64)desired_clk * percent_tol, 100);
+	maxdiv = CLK_DIV_MSK >> CLK_DIV_SHFT;
+	div = 1;
+	while (div <= maxdiv) {
+		mult = (u64)div * desired_clk;
+		if (mult != (unsigned long)mult)
+			break;
+
+		offset = div * abs_tol;
+		freq = clk_round_rate(clk, mult - offset);
+
+		/* Can only get lower if we're done */
+		if (freq < mult - offset)
+			break;
+
+		/*
+		 * Re-calculate div in case rounding skipped rates but we
+		 * ended up at a good one, then check for a match.
+		 */
+		div = DIV_ROUND_CLOSEST(freq, desired_clk);
+		achieved = DIV_ROUND_CLOSEST(freq, div);
+		if (achieved <= desired_clk + abs_tol &&
+		    achieved >= desired_clk - abs_tol) {
+			*clk_div = div;
+			return freq;
+		}
+
+		div = DIV_ROUND_UP(freq, desired_clk);
+	}
+
+	return 0;
+}
+
 static unsigned long get_clk_div_rate(struct clk *clk, unsigned int baud,
 			unsigned int sampling_rate, unsigned int *clk_div)
 {
 	unsigned long ser_clk;
 	unsigned long desired_clk;
-	unsigned long freq, prev;
-	unsigned long div, maxdiv;
-	int64_t mult;
 
 	desired_clk = baud * sampling_rate;
-	if (!desired_clk) {
-		pr_err("%s: Invalid frequency\n", __func__);
+	if (!desired_clk)
 		return 0;
-	}
 
-	maxdiv = CLK_DIV_MSK >> CLK_DIV_SHFT;
-	prev = 0;
-
-	for (div = 1; div <= maxdiv; div++) {
-		mult = div * desired_clk;
-		if (mult > ULONG_MAX)
-			break;
-
-		freq = clk_round_rate(clk, (unsigned long)mult);
-		if (!(freq % desired_clk)) {
-			ser_clk = freq;
-			break;
-		}
-
-		if (!prev)
-			ser_clk = freq;
-		else if (prev == freq)
-			break;
-
-		prev = freq;
-	}
-
-	if (!ser_clk) {
-		pr_err("%s: Can't find matching DFS entry for baud %d\n",
-								__func__, baud);
-		return ser_clk;
-	}
-
-	*clk_div = ser_clk / desired_clk;
-	if (!(*clk_div))
-		*clk_div = 1;
+	/*
+	 * try to find a clock rate within 2% tolerance, then within 5%
+	 */
+	ser_clk = find_clk_rate_in_tol(clk, desired_clk, clk_div, 2);
+	if (!ser_clk)
+		ser_clk = find_clk_rate_in_tol(clk, desired_clk, clk_div, 5);
 
 	return ser_clk;
 }
 
 static void qcom_geni_serial_set_termios(struct uart_port *uport,
-				struct ktermios *termios, struct ktermios *old)
+					 struct ktermios *termios,
+					 const struct ktermios *old)
 {
 	unsigned int baud;
 	u32 bits_per_char;
@@ -1023,8 +1051,15 @@ static void qcom_geni_serial_set_termios(struct uart_port *uport,
 
 	clk_rate = get_clk_div_rate(port->se.clk, baud,
 		sampling_rate, &clk_div);
-	if (!clk_rate)
+	if (!clk_rate) {
+		dev_err(port->se.dev,
+			"Couldn't find suitable clock rate for %u\n",
+			baud * sampling_rate);
 		goto out_restart_rx;
+	}
+
+	dev_dbg(port->se.dev, "desired_rate-%u, clk_rate-%lu, clk_div-%u\n",
+			baud * sampling_rate, clk_rate, clk_div);
 
 	uport->uartclk = clk_rate;
 	dev_pm_opp_set_rate(uport->dev, clk_rate);
@@ -1495,7 +1530,7 @@ static int qcom_geni_serial_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static int __maybe_unused qcom_geni_serial_sys_suspend(struct device *dev)
+static int qcom_geni_serial_sys_suspend(struct device *dev)
 {
 	struct qcom_geni_serial_port *port = dev_get_drvdata(dev);
 	struct uart_port *uport = &port->uport;
@@ -1506,13 +1541,13 @@ static int __maybe_unused qcom_geni_serial_sys_suspend(struct device *dev)
 	 * even with no_console_suspend
 	 */
 	if (uart_console(uport)) {
-		geni_icc_set_tag(&port->se, 0x3);
+		geni_icc_set_tag(&port->se, QCOM_ICC_TAG_ACTIVE_ONLY);
 		geni_icc_set_bw(&port->se);
 	}
 	return uart_suspend_port(private_data->drv, uport);
 }
 
-static int __maybe_unused qcom_geni_serial_sys_resume(struct device *dev)
+static int qcom_geni_serial_sys_resume(struct device *dev)
 {
 	int ret;
 	struct qcom_geni_serial_port *port = dev_get_drvdata(dev);
@@ -1521,15 +1556,51 @@ static int __maybe_unused qcom_geni_serial_sys_resume(struct device *dev)
 
 	ret = uart_resume_port(private_data->drv, uport);
 	if (uart_console(uport)) {
-		geni_icc_set_tag(&port->se, 0x7);
+		geni_icc_set_tag(&port->se, QCOM_ICC_TAG_ALWAYS);
 		geni_icc_set_bw(&port->se);
 	}
 	return ret;
 }
 
+static int qcom_geni_serial_sys_hib_resume(struct device *dev)
+{
+	int ret = 0;
+	struct uart_port *uport;
+	struct qcom_geni_private_data *private_data;
+	struct qcom_geni_serial_port *port = dev_get_drvdata(dev);
+
+	uport = &port->uport;
+	private_data = uport->private_data;
+
+	if (uart_console(uport)) {
+		geni_icc_set_tag(&port->se, 0x7);
+		geni_icc_set_bw(&port->se);
+		ret = uart_resume_port(private_data->drv, uport);
+		/*
+		 * For hibernation usecase clients for
+		 * console UART won't call port setup during restore,
+		 * hence call port setup for console uart.
+		 */
+		qcom_geni_serial_port_setup(uport);
+	} else {
+		/*
+		 * Peripheral register settings are lost during hibernation.
+		 * Update setup flag such that port setup happens again
+		 * during next session. Clients of HS-UART will close and
+		 * open the port during hibernation.
+		 */
+		port->setup = false;
+	}
+	return ret;
+}
+
 static const struct dev_pm_ops qcom_geni_serial_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(qcom_geni_serial_sys_suspend,
-					qcom_geni_serial_sys_resume)
+	.suspend = pm_sleep_ptr(qcom_geni_serial_sys_suspend),
+	.resume = pm_sleep_ptr(qcom_geni_serial_sys_resume),
+	.freeze = pm_sleep_ptr(qcom_geni_serial_sys_suspend),
+	.poweroff = pm_sleep_ptr(qcom_geni_serial_sys_suspend),
+	.restore = pm_sleep_ptr(qcom_geni_serial_sys_hib_resume),
+	.thaw = pm_sleep_ptr(qcom_geni_serial_sys_hib_resume),
 };
 
 static const struct of_device_id qcom_geni_serial_match_table[] = {

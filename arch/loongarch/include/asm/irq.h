@@ -81,9 +81,6 @@ extern struct acpi_vector_group msi_group[MAX_IO_PICS];
 #define GSI_MIN_PCH_IRQ		LOONGSON_PCH_IRQ_BASE
 #define GSI_MAX_PCH_IRQ		(LOONGSON_PCH_IRQ_BASE + 256 - 1)
 
-extern int find_pch_pic(u32 gsi);
-extern int eiointc_get_node(int id);
-
 struct acpi_madt_lio_pic;
 struct acpi_madt_eio_pic;
 struct acpi_madt_ht_pic;
@@ -96,20 +93,12 @@ int liointc_acpi_init(struct irq_domain *parent,
 int eiointc_acpi_init(struct irq_domain *parent,
 					struct acpi_madt_eio_pic *acpi_eiointc);
 
-struct irq_domain *htvec_acpi_init(struct irq_domain *parent,
+int htvec_acpi_init(struct irq_domain *parent,
 					struct acpi_madt_ht_pic *acpi_htvec);
 int pch_lpc_acpi_init(struct irq_domain *parent,
 					struct acpi_madt_lpc_pic *acpi_pchlpc);
-#if IS_ENABLED(CONFIG_LOONGSON_PCH_MSI)
 int pch_msi_acpi_init(struct irq_domain *parent,
 					struct acpi_madt_msi_pic *acpi_pchmsi);
-#else
-static inline int pch_msi_acpi_init(struct irq_domain *parent,
-					struct acpi_madt_msi_pic *acpi_pchmsi)
-{
-	return 0;
-}
-#endif
 int pch_pic_acpi_init(struct irq_domain *parent,
 					struct acpi_madt_bio_pic *acpi_pchpic);
 int find_pch_pic(u32 gsi);
@@ -128,7 +117,7 @@ extern struct fwnode_handle *liointc_handle;
 extern struct fwnode_handle *pch_lpc_handle;
 extern struct fwnode_handle *pch_pic_handle[MAX_IO_PICS];
 
-extern irqreturn_t loongson3_ipi_interrupt(int irq, void *dev);
+extern irqreturn_t loongson_ipi_interrupt(int irq, void *dev);
 
 #include <asm-generic/irq.h>
 

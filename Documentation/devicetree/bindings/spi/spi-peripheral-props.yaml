@@ -16,7 +16,7 @@ description:
   their own separate schema that should be referenced from here.
 
 maintainers:
-  - Pratyush Yadav <p.yadav@ti.com>
+  - Mark Brown <broonie@kernel.org>
 
 properties:
   reg:
@@ -28,11 +28,6 @@ properties:
           maximum: 256
     description:
       Chip select used by the device.
-
-  spi-3wire:
-    $ref: /schemas/types.yaml#/definitions/flag
-    description:
-      The device requires 3-wire mode.
 
   spi-cs-high:
     $ref: /schemas/types.yaml#/definitions/flag
@@ -48,6 +43,11 @@ properties:
     $ref: /schemas/types.yaml#/definitions/uint32
     description:
       Maximum SPI clocking speed of the device in Hz.
+
+  spi-cs-setup-delay-ns:
+    description:
+      Delay in nanoseconds to be introduced by the controller after CS is
+      asserted.
 
   spi-rx-bus-width:
     description:

@@ -571,10 +571,15 @@ int ice_reset_vf(struct ice_vf *vf, u32 flags)
 
 	if (ice_is_vf_disabled(vf)) {
 		vsi = ice_get_vf_vsi(vf);
-		if (WARN_ON(!vsi))
+		if (!vsi) {
+			dev_dbg(dev, "VF is already removed\n");
 			return -EINVAL;
+		}
 		ice_vsi_stop_lan_tx_rings(vsi, ICE_NO_RESET, vf->vf_id);
-		ice_vsi_stop_all_rx_rings(vsi);
+
+		if (ice_vsi_is_rx_queue_active(vsi))
+			ice_vsi_stop_all_rx_rings(vsi);
+
 		dev_dbg(dev, "VF is already disabled, there is no need for resetting it, telling VM, all is fine %d\n",
 			vf->vf_id);
 		return 0;
@@ -695,6 +700,30 @@ void ice_dis_vf_qs(struct ice_vf *vf)
 }
 
 /**
+ * ice_err_to_virt_err - translate errors for VF return code
+ * @err: error return code
+ */
+enum virtchnl_status_code ice_err_to_virt_err(int err)
+{
+	switch (err) {
+	case 0:
+		return VIRTCHNL_STATUS_SUCCESS;
+	case -EINVAL:
+	case -ENODEV:
+		return VIRTCHNL_STATUS_ERR_PARAM;
+	case -ENOMEM:
+		return VIRTCHNL_STATUS_ERR_NO_MEMORY;
+	case -EALREADY:
+	case -EBUSY:
+	case -EIO:
+	case -ENOSPC:
+		return VIRTCHNL_STATUS_ERR_ADMIN_QUEUE_ERROR;
+	default:
+		return VIRTCHNL_STATUS_ERR_NOT_SUPPORTED;
+	}
+}
+
+/**
  * ice_check_vf_init - helper to check if VF init complete
  * @vf: the pointer to the VF to check
  */
@@ -762,13 +791,16 @@ static int ice_cfg_mac_antispoof(struct ice_vsi *vsi, bool enable)
 static int ice_vsi_ena_spoofchk(struct ice_vsi *vsi)
 {
 	struct ice_vsi_vlan_ops *vlan_ops;
-	int err;
+	int err = 0;
 
 	vlan_ops = ice_get_compat_vsi_vlan_ops(vsi);
 
-	err = vlan_ops->ena_tx_filtering(vsi);
-	if (err)
-		return err;
+	/* Allow VF with VLAN 0 only to send all tagged traffic */
+	if (vsi->type != ICE_VSI_VF || ice_vsi_has_non_zero_vlans(vsi)) {
+		err = vlan_ops->ena_tx_filtering(vsi);
+		if (err)
+			return err;
+	}
 
 	return ice_cfg_mac_antispoof(vsi, true);
 }

@@ -92,8 +92,6 @@
 #define BOND_XFRM_FEATURES (NETIF_F_HW_ESP | NETIF_F_HW_ESP_TX_CSUM | \
 			    NETIF_F_GSO_ESP)
 
-#define BOND_TLS_FEATURES (NETIF_F_HW_TLS_TX | NETIF_F_HW_TLS_RX)
-
 #ifdef CONFIG_NET_POLL_CONTROLLER
 extern atomic_t netpoll_block_tx;
 
@@ -161,8 +159,9 @@ struct slave {
 	struct net_device *dev; /* first - useful for panic debug */
 	struct bonding *bond; /* our master */
 	int    delay;
-	/* all three in jiffies */
+	/* all 4 in jiffies */
 	unsigned long last_link_up;
+	unsigned long last_tx;
 	unsigned long last_rx;
 	unsigned long target_last_arp_rx[BOND_MAX_ARP_TARGETS];
 	s8     link;		/* one of BOND_LINK_XXXX */
@@ -278,8 +277,6 @@ struct bond_vlan_tag {
 	__be16		vlan_proto;
 	unsigned short	vlan_id;
 };
-
-bool bond_sk_check(struct bonding *bond);
 
 /**
  * Returns NULL if the net_device does not belong to any of the bond's slaves
@@ -540,6 +537,16 @@ static inline unsigned long slave_last_rx(struct bonding *bond,
 	return slave->last_rx;
 }
 
+static inline void slave_update_last_tx(struct slave *slave)
+{
+	WRITE_ONCE(slave->last_tx, jiffies);
+}
+
+static inline unsigned long slave_last_tx(struct slave *slave)
+{
+	return READ_ONCE(slave->last_tx);
+}
+
 #ifdef CONFIG_NET_POLL_CONTROLLER
 static inline netdev_tx_t bond_netpoll_send_skb(const struct slave *slave,
 					 struct sk_buff *skb)
@@ -774,6 +781,9 @@ extern struct rtnl_link_ops bond_link_ops;
 
 /* exported from bond_sysfs_slave.c */
 extern const struct sysfs_ops slave_sysfs_ops;
+
+/* exported from bond_3ad.c */
+extern const u8 lacpdu_mcast_addr[];
 
 static inline netdev_tx_t bond_tx_drop(struct net_device *dev, struct sk_buff *skb)
 {

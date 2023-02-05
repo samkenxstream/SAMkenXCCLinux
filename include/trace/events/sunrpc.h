@@ -14,7 +14,7 @@
 #include <linux/net.h>
 #include <linux/tracepoint.h>
 
-#include <trace/events/sunrpc_base.h>
+#include <trace/misc/sunrpc.h>
 
 TRACE_DEFINE_ENUM(SOCK_STREAM);
 TRACE_DEFINE_ENUM(SOCK_DGRAM);
@@ -1266,6 +1266,26 @@ TRACE_EVENT(xprt_reserve,
 	)
 );
 
+TRACE_EVENT(xs_data_ready,
+	TP_PROTO(
+		const struct rpc_xprt *xprt
+	),
+
+	TP_ARGS(xprt),
+
+	TP_STRUCT__entry(
+		__string(addr, xprt->address_strings[RPC_DISPLAY_ADDR])
+		__string(port, xprt->address_strings[RPC_DISPLAY_PORT])
+	),
+
+	TP_fast_assign(
+		__assign_str(addr, xprt->address_strings[RPC_DISPLAY_ADDR]);
+		__assign_str(port, xprt->address_strings[RPC_DISPLAY_PORT]);
+	),
+
+	TP_printk("peer=[%s]:%s", __get_str(addr), __get_str(port))
+);
+
 TRACE_EVENT(xs_stream_read_data,
 	TP_PROTO(struct rpc_xprt *xprt, ssize_t err, size_t total),
 
@@ -1646,10 +1666,12 @@ TRACE_DEFINE_ENUM(SVC_COMPLETE);
 #define SVC_RQST_ENDPOINT_VARARGS \
 		__entry->xid, __get_sockaddr(server), __get_sockaddr(client)
 
-TRACE_EVENT(svc_authenticate,
+TRACE_EVENT_CONDITION(svc_authenticate,
 	TP_PROTO(const struct svc_rqst *rqst, int auth_res),
 
 	TP_ARGS(rqst, auth_res),
+
+	TP_CONDITION(auth_res != SVC_OK && auth_res != SVC_COMPLETE),
 
 	TP_STRUCT__entry(
 		SVC_RQST_ENDPOINT_FIELDS(rqst)
@@ -1989,20 +2011,24 @@ TRACE_EVENT(svc_wake_up,
 
 TRACE_EVENT(svc_alloc_arg_err,
 	TP_PROTO(
-		unsigned int pages
+		unsigned int requested,
+		unsigned int allocated
 	),
 
-	TP_ARGS(pages),
+	TP_ARGS(requested, allocated),
 
 	TP_STRUCT__entry(
-		__field(unsigned int, pages)
+		__field(unsigned int, requested)
+		__field(unsigned int, allocated)
 	),
 
 	TP_fast_assign(
-		__entry->pages = pages;
+		__entry->requested = requested;
+		__entry->allocated = allocated;
 	),
 
-	TP_printk("pages=%u", __entry->pages)
+	TP_printk("requested=%u allocated=%u",
+		__entry->requested, __entry->allocated)
 );
 
 DECLARE_EVENT_CLASS(svc_deferred_event,

@@ -38,7 +38,7 @@
 #define DM_VERITY_OPT_AT_MOST_ONCE	"check_at_most_once"
 #define DM_VERITY_OPT_TASKLET_VERIFY	"try_verify_in_tasklet"
 
-#define DM_VERITY_OPTS_MAX		(3 + DM_VERITY_OPTS_FEC + \
+#define DM_VERITY_OPTS_MAX		(4 + DM_VERITY_OPTS_FEC + \
 					 DM_VERITY_ROOT_HASH_VERIFICATION_OPTS)
 
 static unsigned dm_verity_prefetch_cluster = DM_VERITY_DEFAULT_PREFETCH_SIZE;
@@ -1053,7 +1053,7 @@ static int verity_parse_opt_args(struct dm_arg_set *as, struct dm_verity *v,
 				 struct dm_verity_sig_opts *verify_args,
 				 bool only_modifier_opts)
 {
-	int r;
+	int r = 0;
 	unsigned argc;
 	struct dm_target *ti = v->ti;
 	const char *arg_name;
@@ -1123,8 +1123,18 @@ static int verity_parse_opt_args(struct dm_arg_set *as, struct dm_verity *v,
 			if (r)
 				return r;
 			continue;
+
+		} else if (only_modifier_opts) {
+			/*
+			 * Ignore unrecognized opt, could easily be an extra
+			 * argument to an option whose parsing was skipped.
+			 * Normal parsing (@only_modifier_opts=false) will
+			 * properly parse all options (and their extra args).
+			 */
+			continue;
 		}
 
+		DMERR("Unrecognized verity feature request: %s", arg_name);
 		ti->error = "Unrecognized verity feature request";
 		return -EINVAL;
 	} while (argc && !r);
@@ -1391,14 +1401,16 @@ static int verity_ctr(struct dm_target *ti, unsigned argc, char **argv)
 
 	/* WQ_UNBOUND greatly improves performance when running on ramdisk */
 	wq_flags = WQ_MEM_RECLAIM | WQ_UNBOUND;
-	if (v->use_tasklet) {
-		/*
-		 * Allow verify_wq to preempt softirq since verification in
-		 * tasklet will fall-back to using it for error handling
-		 * (or if the bufio cache doesn't have required hashes).
-		 */
-		wq_flags |= WQ_HIGHPRI;
-	}
+	/*
+	 * Using WQ_HIGHPRI improves throughput and completion latency by
+	 * reducing wait times when reading from a dm-verity device.
+	 *
+	 * Also as required for the "try_verify_in_tasklet" feature: WQ_HIGHPRI
+	 * allows verify_wq to preempt softirq since verification in tasklet
+	 * will fall-back to using it for error handling (or if the bufio cache
+	 * doesn't have required hashes).
+	 */
+	wq_flags |= WQ_HIGHPRI;
 	v->verify_wq = alloc_workqueue("kverityd", wq_flags, num_online_cpus());
 	if (!v->verify_wq) {
 		ti->error = "Cannot allocate workqueue";
@@ -1434,6 +1446,22 @@ bad:
 bool dm_is_verity_target(struct dm_target *ti)
 {
 	return ti->type->module == THIS_MODULE;
+}
+
+/*
+ * Get the verity mode (error behavior) of a verity target.
+ *
+ * Returns the verity mode of the target, or -EINVAL if 'ti' is not a verity
+ * target.
+ */
+int dm_verity_get_mode(struct dm_target *ti)
+{
+	struct dm_verity *v = ti->private;
+
+	if (!dm_is_verity_target(ti))
+		return -EINVAL;
+
+	return v->mode;
 }
 
 /*

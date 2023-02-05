@@ -24,7 +24,7 @@ struct io_xattr {
 
 void io_xattr_cleanup(struct io_kiocb *req)
 {
-	struct io_xattr *ix = io_kiocb_to_cmd(req);
+	struct io_xattr *ix = io_kiocb_to_cmd(req, struct io_xattr);
 
 	if (ix->filename)
 		putname(ix->filename);
@@ -44,7 +44,7 @@ static void io_xattr_finish(struct io_kiocb *req, int ret)
 static int __io_getxattr_prep(struct io_kiocb *req,
 			      const struct io_uring_sqe *sqe)
 {
-	struct io_xattr *ix = io_kiocb_to_cmd(req);
+	struct io_xattr *ix = io_kiocb_to_cmd(req, struct io_xattr);
 	const char __user *name;
 	int ret;
 
@@ -85,7 +85,7 @@ int io_fgetxattr_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 
 int io_getxattr_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
-	struct io_xattr *ix = io_kiocb_to_cmd(req);
+	struct io_xattr *ix = io_kiocb_to_cmd(req, struct io_xattr);
 	const char __user *path;
 	int ret;
 
@@ -106,13 +106,13 @@ int io_getxattr_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 
 int io_fgetxattr(struct io_kiocb *req, unsigned int issue_flags)
 {
-	struct io_xattr *ix = io_kiocb_to_cmd(req);
+	struct io_xattr *ix = io_kiocb_to_cmd(req, struct io_xattr);
 	int ret;
 
 	if (issue_flags & IO_URING_F_NONBLOCK)
 		return -EAGAIN;
 
-	ret = do_getxattr(mnt_user_ns(req->file->f_path.mnt),
+	ret = do_getxattr(mnt_idmap(req->file->f_path.mnt),
 			req->file->f_path.dentry,
 			&ix->ctx);
 
@@ -122,7 +122,7 @@ int io_fgetxattr(struct io_kiocb *req, unsigned int issue_flags)
 
 int io_getxattr(struct io_kiocb *req, unsigned int issue_flags)
 {
-	struct io_xattr *ix = io_kiocb_to_cmd(req);
+	struct io_xattr *ix = io_kiocb_to_cmd(req, struct io_xattr);
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
 	struct path path;
 	int ret;
@@ -133,9 +133,7 @@ int io_getxattr(struct io_kiocb *req, unsigned int issue_flags)
 retry:
 	ret = filename_lookup(AT_FDCWD, ix->filename, lookup_flags, &path, NULL);
 	if (!ret) {
-		ret = do_getxattr(mnt_user_ns(path.mnt),
-				path.dentry,
-				&ix->ctx);
+		ret = do_getxattr(mnt_idmap(path.mnt), path.dentry, &ix->ctx);
 
 		path_put(&path);
 		if (retry_estale(ret, lookup_flags)) {
@@ -151,7 +149,7 @@ retry:
 static int __io_setxattr_prep(struct io_kiocb *req,
 			const struct io_uring_sqe *sqe)
 {
-	struct io_xattr *ix = io_kiocb_to_cmd(req);
+	struct io_xattr *ix = io_kiocb_to_cmd(req, struct io_xattr);
 	const char __user *name;
 	int ret;
 
@@ -181,7 +179,7 @@ static int __io_setxattr_prep(struct io_kiocb *req,
 
 int io_setxattr_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
-	struct io_xattr *ix = io_kiocb_to_cmd(req);
+	struct io_xattr *ix = io_kiocb_to_cmd(req, struct io_xattr);
 	const char __user *path;
 	int ret;
 
@@ -206,14 +204,14 @@ int io_fsetxattr_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 }
 
 static int __io_setxattr(struct io_kiocb *req, unsigned int issue_flags,
-			struct path *path)
+			const struct path *path)
 {
-	struct io_xattr *ix = io_kiocb_to_cmd(req);
+	struct io_xattr *ix = io_kiocb_to_cmd(req, struct io_xattr);
 	int ret;
 
 	ret = mnt_want_write(path->mnt);
 	if (!ret) {
-		ret = do_setxattr(mnt_user_ns(path->mnt), path->dentry, &ix->ctx);
+		ret = do_setxattr(mnt_idmap(path->mnt), path->dentry, &ix->ctx);
 		mnt_drop_write(path->mnt);
 	}
 
@@ -234,7 +232,7 @@ int io_fsetxattr(struct io_kiocb *req, unsigned int issue_flags)
 
 int io_setxattr(struct io_kiocb *req, unsigned int issue_flags)
 {
-	struct io_xattr *ix = io_kiocb_to_cmd(req);
+	struct io_xattr *ix = io_kiocb_to_cmd(req, struct io_xattr);
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
 	struct path path;
 	int ret;

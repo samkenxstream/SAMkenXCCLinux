@@ -12,6 +12,7 @@
 #include <linux/irq.h>
 #include <linux/irqdomain.h>
 #include <linux/memblock.h>
+#include <linux/of_fdt.h>
 #include <linux/serial_core.h>
 #include <asm/io.h>
 #include <asm/numa.h>
@@ -48,29 +49,12 @@ void __init __acpi_unmap_table(void __iomem *map, unsigned long size)
 	early_memunmap(map, size);
 }
 
-void __init __iomem *acpi_os_ioremap(acpi_physical_address phys, acpi_size size)
+void __iomem *acpi_os_ioremap(acpi_physical_address phys, acpi_size size)
 {
 	if (!memblock_is_memory(phys))
 		return ioremap(phys, size);
 	else
 		return ioremap_cache(phys, size);
-}
-
-void __init acpi_boot_table_init(void)
-{
-	/*
-	 * If acpi_disabled, bail out
-	 */
-	if (acpi_disabled)
-		return;
-
-	/*
-	 * Initialize the ACPI boot-time table parser.
-	 */
-	if (acpi_table_init()) {
-		disable_acpi();
-		return;
-	}
 }
 
 #ifdef CONFIG_SMP
@@ -104,6 +88,39 @@ static int set_processor_mask(u32 id, u32 flags)
 }
 #endif
 
+static int __init
+acpi_parse_processor(union acpi_subtable_headers *header, const unsigned long end)
+{
+	struct acpi_madt_core_pic *processor = NULL;
+
+	processor = (struct acpi_madt_core_pic *)header;
+	if (BAD_MADT_ENTRY(processor, end))
+		return -EINVAL;
+
+	acpi_table_print_madt_entry(&header->common);
+#ifdef CONFIG_SMP
+	set_processor_mask(processor->core_id, processor->flags);
+#endif
+
+	return 0;
+}
+
+static int __init
+acpi_parse_eio_master(union acpi_subtable_headers *header, const unsigned long end)
+{
+	static int core = 0;
+	struct acpi_madt_eio_pic *eiointc = NULL;
+
+	eiointc = (struct acpi_madt_eio_pic *)header;
+	if (BAD_MADT_ENTRY(eiointc, end))
+		return -EINVAL;
+
+	core = eiointc->node * CORES_PER_EIO_NODE;
+	set_bit(core, &(loongson_sysconf.cores_io_master));
+
+	return 0;
+}
+
 static void __init acpi_process_madt(void)
 {
 #ifdef CONFIG_SMP
@@ -114,17 +131,36 @@ static void __init acpi_process_madt(void)
 		__cpu_logical_map[i] = -1;
 	}
 #endif
+	acpi_table_parse_madt(ACPI_MADT_TYPE_CORE_PIC,
+			acpi_parse_processor, MAX_CORE_PIC);
+
+	acpi_table_parse_madt(ACPI_MADT_TYPE_EIO_PIC,
+			acpi_parse_eio_master, MAX_IO_PICS);
 
 	loongson_sysconf.nr_cpus = num_processors;
 }
 
-int __init acpi_boot_init(void)
+#ifndef CONFIG_SUSPEND
+int (*acpi_suspend_lowlevel)(void);
+#else
+int (*acpi_suspend_lowlevel)(void) = loongarch_acpi_suspend;
+#endif
+
+void __init acpi_boot_table_init(void)
 {
 	/*
 	 * If acpi_disabled, bail out
 	 */
 	if (acpi_disabled)
-		return -1;
+		goto fdt_earlycon;
+
+	/*
+	 * Initialize the ACPI boot-time table parser.
+	 */
+	if (acpi_table_init()) {
+		disable_acpi();
+		goto fdt_earlycon;
+	}
 
 	loongson_sysconf.boot_cpu_id = read_csr_cpuid();
 
@@ -136,7 +172,11 @@ int __init acpi_boot_init(void)
 	/* Do not enable ACPI SPCR console by default */
 	acpi_parse_spcr(earlycon_acpi_spcr_enable, false);
 
-	return 0;
+	return;
+
+fdt_earlycon:
+	if (earlycon_acpi_spcr_enable)
+		early_init_dt_scan_chosen_stdout();
 }
 
 #ifdef CONFIG_ACPI_NUMA

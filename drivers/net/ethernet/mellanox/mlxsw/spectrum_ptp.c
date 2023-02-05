@@ -46,6 +46,7 @@ struct mlxsw_sp2_ptp_state {
 					  * enabled.
 					  */
 	struct hwtstamp_config config;
+	struct mutex lock; /* Protects 'config' and HW configuration. */
 };
 
 struct mlxsw_sp1_ptp_key {
@@ -188,29 +189,17 @@ mlxsw_sp1_ptp_phc_settime(struct mlxsw_sp1_ptp_clock *clock, u64 nsec)
 static int mlxsw_sp1_ptp_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 {
 	struct mlxsw_sp1_ptp_clock *clock = mlxsw_sp1_ptp_clock(ptp);
-	int neg_adj = 0;
-	u32 diff;
-	u64 adj;
 	s32 ppb;
 
 	ppb = scaled_ppm_to_ppb(scaled_ppm);
 
-	if (ppb < 0) {
-		neg_adj = 1;
-		ppb = -ppb;
-	}
-
-	adj = clock->nominal_c_mult;
-	adj *= ppb;
-	diff = div_u64(adj, NSEC_PER_SEC);
-
 	spin_lock_bh(&clock->lock);
 	timecounter_read(&clock->tc);
-	clock->cycles.mult = neg_adj ? clock->nominal_c_mult - diff :
-				       clock->nominal_c_mult + diff;
+	clock->cycles.mult = adjust_by_scaled_ppm(clock->nominal_c_mult,
+						  scaled_ppm);
 	spin_unlock_bh(&clock->lock);
 
-	return mlxsw_sp_ptp_phc_adjfreq(&clock->common, neg_adj ? -ppb : ppb);
+	return mlxsw_sp_ptp_phc_adjfreq(&clock->common, ppb);
 }
 
 static int mlxsw_sp1_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
@@ -1374,6 +1363,7 @@ struct mlxsw_sp_ptp_state *mlxsw_sp2_ptp_init(struct mlxsw_sp *mlxsw_sp)
 		goto err_ptp_traps_set;
 
 	refcount_set(&ptp_state->ptp_port_enabled_ref, 0);
+	mutex_init(&ptp_state->lock);
 	return &ptp_state->common;
 
 err_ptp_traps_set:
@@ -1388,6 +1378,7 @@ void mlxsw_sp2_ptp_fini(struct mlxsw_sp_ptp_state *ptp_state_common)
 
 	ptp_state = mlxsw_sp2_ptp_state(mlxsw_sp);
 
+	mutex_destroy(&ptp_state->lock);
 	mlxsw_sp_ptp_traps_unset(mlxsw_sp);
 	kfree(ptp_state);
 }
@@ -1461,7 +1452,10 @@ int mlxsw_sp2_ptp_hwtstamp_get(struct mlxsw_sp_port *mlxsw_sp_port,
 
 	ptp_state = mlxsw_sp2_ptp_state(mlxsw_sp_port->mlxsw_sp);
 
+	mutex_lock(&ptp_state->lock);
 	*config = ptp_state->config;
+	mutex_unlock(&ptp_state->lock);
+
 	return 0;
 }
 
@@ -1523,6 +1517,9 @@ mlxsw_sp2_ptp_get_message_types(const struct hwtstamp_config *config,
 		return -EINVAL;
 	}
 
+	if ((ing_types && !egr_types) || (!ing_types && egr_types))
+		return -EINVAL;
+
 	*p_ing_types = ing_types;
 	*p_egr_types = egr_types;
 	return 0;
@@ -1574,8 +1571,6 @@ static int mlxsw_sp2_ptp_configure_port(struct mlxsw_sp_port *mlxsw_sp_port,
 	struct mlxsw_sp2_ptp_state *ptp_state;
 	int err;
 
-	ASSERT_RTNL();
-
 	ptp_state = mlxsw_sp2_ptp_state(mlxsw_sp_port->mlxsw_sp);
 
 	if (refcount_inc_not_zero(&ptp_state->ptp_port_enabled_ref))
@@ -1597,8 +1592,6 @@ static int mlxsw_sp2_ptp_deconfigure_port(struct mlxsw_sp_port *mlxsw_sp_port,
 	struct mlxsw_sp2_ptp_state *ptp_state;
 	int err;
 
-	ASSERT_RTNL();
-
 	ptp_state = mlxsw_sp2_ptp_state(mlxsw_sp_port->mlxsw_sp);
 
 	if (!refcount_dec_and_test(&ptp_state->ptp_port_enabled_ref))
@@ -1618,16 +1611,20 @@ err_ptp_disable:
 int mlxsw_sp2_ptp_hwtstamp_set(struct mlxsw_sp_port *mlxsw_sp_port,
 			       struct hwtstamp_config *config)
 {
+	struct mlxsw_sp2_ptp_state *ptp_state;
 	enum hwtstamp_rx_filters rx_filter;
 	struct hwtstamp_config new_config;
 	u16 new_ing_types, new_egr_types;
 	bool ptp_enabled;
 	int err;
 
+	ptp_state = mlxsw_sp2_ptp_state(mlxsw_sp_port->mlxsw_sp);
+	mutex_lock(&ptp_state->lock);
+
 	err = mlxsw_sp2_ptp_get_message_types(config, &new_ing_types,
 					      &new_egr_types, &rx_filter);
 	if (err)
-		return err;
+		goto err_get_message_types;
 
 	new_config.flags = config->flags;
 	new_config.tx_type = config->tx_type;
@@ -1640,11 +1637,11 @@ int mlxsw_sp2_ptp_hwtstamp_set(struct mlxsw_sp_port *mlxsw_sp_port,
 		err = mlxsw_sp2_ptp_configure_port(mlxsw_sp_port, new_ing_types,
 						   new_egr_types, new_config);
 		if (err)
-			return err;
+			goto err_configure_port;
 	} else if (!new_ing_types && !new_egr_types && ptp_enabled) {
 		err = mlxsw_sp2_ptp_deconfigure_port(mlxsw_sp_port, new_config);
 		if (err)
-			return err;
+			goto err_deconfigure_port;
 	}
 
 	mlxsw_sp_port->ptp.ing_types = new_ing_types;
@@ -1652,8 +1649,15 @@ int mlxsw_sp2_ptp_hwtstamp_set(struct mlxsw_sp_port *mlxsw_sp_port,
 
 	/* Notify the ioctl caller what we are actually timestamping. */
 	config->rx_filter = rx_filter;
+	mutex_unlock(&ptp_state->lock);
 
 	return 0;
+
+err_deconfigure_port:
+err_configure_port:
+err_get_message_types:
+	mutex_unlock(&ptp_state->lock);
+	return err;
 }
 
 int mlxsw_sp2_ptp_get_ts_info(struct mlxsw_sp *mlxsw_sp,

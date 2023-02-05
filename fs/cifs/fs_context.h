@@ -125,6 +125,7 @@ enum cifs_param {
 	Opt_actimeo,
 	Opt_acdirmax,
 	Opt_acregmax,
+	Opt_closetimeo,
 	Opt_echo_interval,
 	Opt_max_credits,
 	Opt_snapshot,
@@ -247,6 +248,8 @@ struct smb3_fs_context {
 	/* attribute cache timemout for files and directories in jiffies */
 	unsigned long acregmax;
 	unsigned long acdirmax;
+	/* timeout for deferred close of files in jiffies */
+	unsigned long closetimeo;
 	struct smb_version_operations *ops;
 	struct smb_version_values *vals;
 	char *prepath;
@@ -261,8 +264,7 @@ struct smb3_fs_context {
 	__u16 compression; /* compression algorithm 0xFFFF default 0=disabled */
 	bool rootfs:1; /* if it's a SMB root file system */
 	bool witness:1; /* use witness protocol */
-
-	char *mount_options;
+	char *leaf_fullpath;
 };
 
 extern const struct fs_parameter_spec smb3_fs_parameters[];
@@ -279,4 +281,9 @@ static inline struct smb3_fs_context *smb3_fc2context(const struct fs_context *f
 extern int smb3_fs_context_dup(struct smb3_fs_context *new_ctx, struct smb3_fs_context *ctx);
 extern void smb3_update_mnt_flags(struct cifs_sb_info *cifs_sb);
 
+/*
+ * max deferred close timeout (jiffies) - 2^30
+ */
+#define SMB3_MAX_DCLOSETIMEO (1 << 30)
+#define SMB3_DEF_DCLOSETIMEO (5 * HZ) /* Can increase later, other clients use larger */
 #endif

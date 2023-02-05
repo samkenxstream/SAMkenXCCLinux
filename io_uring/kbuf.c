@@ -272,7 +272,7 @@ void io_destroy_buffers(struct io_ring_ctx *ctx)
 
 int io_remove_buffers_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
-	struct io_provide_buf *p = io_kiocb_to_cmd(req);
+	struct io_provide_buf *p = io_kiocb_to_cmd(req, struct io_provide_buf);
 	u64 tmp;
 
 	if (sqe->rw_flags || sqe->addr || sqe->len || sqe->off ||
@@ -291,7 +291,7 @@ int io_remove_buffers_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 
 int io_remove_buffers(struct io_kiocb *req, unsigned int issue_flags)
 {
-	struct io_provide_buf *p = io_kiocb_to_cmd(req);
+	struct io_provide_buf *p = io_kiocb_to_cmd(req, struct io_provide_buf);
 	struct io_ring_ctx *ctx = req->ctx;
 	struct io_buffer_list *bl;
 	int ret = 0;
@@ -306,20 +306,17 @@ int io_remove_buffers(struct io_kiocb *req, unsigned int issue_flags)
 		if (!bl->buf_nr_pages)
 			ret = __io_remove_buffers(ctx, bl, p->nbufs);
 	}
+	io_ring_submit_unlock(ctx, issue_flags);
 	if (ret < 0)
 		req_set_fail(req);
-
-	/* complete before unlock, IOPOLL may need the lock */
 	io_req_set_res(req, ret, 0);
-	__io_req_complete(req, issue_flags);
-	io_ring_submit_unlock(ctx, issue_flags);
-	return IOU_ISSUE_SKIP_COMPLETE;
+	return IOU_OK;
 }
 
 int io_provide_buffers_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
 	unsigned long size, tmp_check;
-	struct io_provide_buf *p = io_kiocb_to_cmd(req);
+	struct io_provide_buf *p = io_kiocb_to_cmd(req, struct io_provide_buf);
 	u64 tmp;
 
 	if (sqe->rw_flags || sqe->splice_fd_in)
@@ -346,6 +343,8 @@ int io_provide_buffers_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe
 	tmp = READ_ONCE(sqe->off);
 	if (tmp > USHRT_MAX)
 		return -E2BIG;
+	if (tmp + p->nbufs >= USHRT_MAX)
+		return -EINVAL;
 	p->bid = tmp;
 	return 0;
 }
@@ -421,7 +420,7 @@ static int io_add_buffers(struct io_ring_ctx *ctx, struct io_provide_buf *pbuf,
 
 int io_provide_buffers(struct io_kiocb *req, unsigned int issue_flags)
 {
-	struct io_provide_buf *p = io_kiocb_to_cmd(req);
+	struct io_provide_buf *p = io_kiocb_to_cmd(req, struct io_provide_buf);
 	struct io_ring_ctx *ctx = req->ctx;
 	struct io_buffer_list *bl;
 	int ret = 0;
@@ -436,7 +435,7 @@ int io_provide_buffers(struct io_kiocb *req, unsigned int issue_flags)
 
 	bl = io_buffer_get_list(ctx, p->bgid);
 	if (unlikely(!bl)) {
-		bl = kzalloc(sizeof(*bl), GFP_KERNEL);
+		bl = kzalloc(sizeof(*bl), GFP_KERNEL_ACCOUNT);
 		if (!bl) {
 			ret = -ENOMEM;
 			goto err;
@@ -456,13 +455,12 @@ int io_provide_buffers(struct io_kiocb *req, unsigned int issue_flags)
 
 	ret = io_add_buffers(ctx, p, bl);
 err:
+	io_ring_submit_unlock(ctx, issue_flags);
+
 	if (ret < 0)
 		req_set_fail(req);
-	/* complete before unlock, IOPOLL may need the lock */
 	io_req_set_res(req, ret, 0);
-	__io_req_complete(req, issue_flags);
-	io_ring_submit_unlock(ctx, issue_flags);
-	return IOU_ISSUE_SKIP_COMPLETE;
+	return IOU_OK;
 }
 
 int io_register_pbuf_ring(struct io_ring_ctx *ctx, void __user *arg)

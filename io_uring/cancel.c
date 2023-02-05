@@ -107,7 +107,7 @@ int io_try_cancel(struct io_uring_task *tctx, struct io_cancel_data *cd,
 
 int io_async_cancel_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 {
-	struct io_cancel *cancel = io_kiocb_to_cmd(req);
+	struct io_cancel *cancel = io_kiocb_to_cmd(req, struct io_cancel);
 
 	if (unlikely(req->flags & REQ_F_BUFFER_SELECT))
 		return -EINVAL;
@@ -164,7 +164,7 @@ static int __io_async_cancel(struct io_cancel_data *cd,
 
 int io_async_cancel(struct io_kiocb *req, unsigned int issue_flags)
 {
-	struct io_cancel *cancel = io_kiocb_to_cmd(req);
+	struct io_cancel *cancel = io_kiocb_to_cmd(req, struct io_cancel);
 	struct io_cancel_data cd = {
 		.ctx	= req->ctx,
 		.data	= cancel->addr,
@@ -218,7 +218,7 @@ static int __io_sync_cancel(struct io_uring_task *tctx,
 	    (cd->flags & IORING_ASYNC_CANCEL_FD_FIXED)) {
 		unsigned long file_ptr;
 
-		if (unlikely(fd > ctx->nr_user_files))
+		if (unlikely(fd >= ctx->nr_user_files))
 			return -EBADF;
 		fd = array_index_nospec(fd, ctx->nr_user_files);
 		file_ptr = io_fixed_file_slot(&ctx->file_table, fd)->file_ptr;
@@ -288,24 +288,23 @@ int io_sync_cancel(struct io_ring_ctx *ctx, void __user *arg)
 
 		ret = __io_sync_cancel(current->io_uring, &cd, sc.fd);
 
+		mutex_unlock(&ctx->uring_lock);
 		if (ret != -EALREADY)
 			break;
 
-		mutex_unlock(&ctx->uring_lock);
-		ret = io_run_task_work_sig();
-		if (ret < 0) {
-			mutex_lock(&ctx->uring_lock);
+		ret = io_run_task_work_sig(ctx);
+		if (ret < 0)
 			break;
-		}
 		ret = schedule_hrtimeout(&timeout, HRTIMER_MODE_ABS);
-		mutex_lock(&ctx->uring_lock);
 		if (!ret) {
 			ret = -ETIME;
 			break;
 		}
+		mutex_lock(&ctx->uring_lock);
 	} while (1);
 
 	finish_wait(&ctx->cq_wait, &wait);
+	mutex_lock(&ctx->uring_lock);
 
 	if (ret == -ENOENT || ret > 0)
 		ret = 0;

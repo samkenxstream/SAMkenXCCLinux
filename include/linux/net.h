@@ -41,6 +41,8 @@ struct net;
 #define SOCK_NOSPACE		2
 #define SOCK_PASSCRED		3
 #define SOCK_PASSSEC		4
+#define SOCK_SUPPORT_ZC		5
+#define SOCK_CUSTOM_SOCKOPT	6
 
 #ifndef ARCH_HAS_SOCKET_TYPES
 /**
@@ -307,8 +309,6 @@ do {									\
 
 #define net_get_random_once(buf, nbytes)			\
 	get_random_once((buf), (nbytes))
-#define net_get_random_once_wait(buf, nbytes)			\
-	get_random_once_wait((buf), (nbytes))
 
 /*
  * E.g. XFS meta- & log-data is in slab pages, or bcache meta

@@ -26,7 +26,7 @@ struct ovl_lookup_data {
 	bool metacopy;
 };
 
-static int ovl_check_redirect(struct path *path, struct ovl_lookup_data *d,
+static int ovl_check_redirect(const struct path *path, struct ovl_lookup_data *d,
 			      size_t prelen, const char *post)
 {
 	int res;
@@ -42,7 +42,7 @@ static int ovl_check_redirect(struct path *path, struct ovl_lookup_data *d,
 		 * One of the ancestor path elements in an absolute path
 		 * lookup in ovl_lookup_layer() could have been opaque and
 		 * that will stop further lookup in lower layers (d->stop=true)
-		 * But we have found an absolute redirect in decendant path
+		 * But we have found an absolute redirect in descendant path
 		 * element and that should force continue lookup in lower
 		 * layers (reset d->stop).
 		 */
@@ -194,7 +194,7 @@ struct dentry *ovl_decode_real_fh(struct ovl_fs *ofs, struct ovl_fh *fh,
 	return real;
 }
 
-static bool ovl_is_opaquedir(struct ovl_fs *ofs, struct path *path)
+static bool ovl_is_opaquedir(struct ovl_fs *ofs, const struct path *path)
 {
 	return ovl_path_check_dir_xattr(ofs, path, OVL_XATTR_OPAQUE);
 }
@@ -487,7 +487,8 @@ fail:
 }
 
 /* Get upper dentry from index */
-struct dentry *ovl_index_upper(struct ovl_fs *ofs, struct dentry *index)
+struct dentry *ovl_index_upper(struct ovl_fs *ofs, struct dentry *index,
+			       bool connected)
 {
 	struct ovl_fh *fh;
 	struct dentry *upper;
@@ -499,7 +500,7 @@ struct dentry *ovl_index_upper(struct ovl_fs *ofs, struct dentry *index)
 	if (IS_ERR_OR_NULL(fh))
 		return ERR_CAST(fh);
 
-	upper = ovl_decode_real_fh(ofs, fh, ovl_upper_mnt(ofs), true);
+	upper = ovl_decode_real_fh(ofs, fh, ovl_upper_mnt(ofs), connected);
 	kfree(fh);
 
 	if (IS_ERR_OR_NULL(upper))
@@ -572,7 +573,7 @@ int ovl_verify_index(struct ovl_fs *ofs, struct dentry *index)
 	 * directly from the index dentry, but for dir index we first need to
 	 * decode the upper directory.
 	 */
-	upper = ovl_index_upper(ofs, index);
+	upper = ovl_index_upper(ofs, index, false);
 	if (IS_ERR_OR_NULL(upper)) {
 		err = PTR_ERR(upper);
 		/*
@@ -648,7 +649,7 @@ static int ovl_get_index_name_fh(struct ovl_fh *fh, struct qstr *name)
  * If the index dentry for a copy up origin inode is positive, but points
  * to an inode different than the upper inode, then either the upper inode
  * has been copied up and not indexed or it was indexed, but since then
- * index dir was cleared. Either way, that index cannot be used to indentify
+ * index dir was cleared. Either way, that index cannot be used to identify
  * the overlay inode.
  */
 int ovl_get_index_name(struct ovl_fs *ofs, struct dentry *origin,
@@ -1085,6 +1086,11 @@ struct dentry *ovl_lookup(struct inode *dir, struct dentry *dentry,
 			.mnt = ovl_upper_mnt(ofs),
 		};
 
+		/*
+		 * It's safe to assign upperredirect here: the previous
+		 * assignment of happens only if upperdentry is non-NULL, and
+		 * this one only if upperdentry is NULL.
+		 */
 		upperredirect = ovl_get_redirect_xattr(ofs, &upperpath, 0);
 		if (IS_ERR(upperredirect)) {
 			err = PTR_ERR(upperredirect);

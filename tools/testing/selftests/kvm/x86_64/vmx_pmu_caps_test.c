@@ -20,16 +20,6 @@
 #define PMU_CAP_FW_WRITES	(1ULL << 13)
 #define PMU_CAP_LBR_FMT		0x3f
 
-union cpuid10_eax {
-	struct {
-		unsigned int version_id:8;
-		unsigned int num_counters:8;
-		unsigned int bit_width:8;
-		unsigned int mask_length:8;
-	} split;
-	unsigned int full;
-};
-
 union perf_capabilities {
 	struct {
 		u64	lbr_format:6;
@@ -53,12 +43,11 @@ static void guest_code(void)
 
 int main(int argc, char *argv[])
 {
-	const struct kvm_cpuid_entry2 *entry_a_0;
 	struct kvm_vm *vm;
 	struct kvm_vcpu *vcpu;
 	int ret;
-	union cpuid10_eax eax;
 	union perf_capabilities host_cap;
+	uint64_t val;
 
 	host_cap.capabilities = kvm_get_feature_msr(MSR_IA32_PERF_CAPABILITIES);
 	host_cap.capabilities &= (PMU_CAP_FW_WRITES | PMU_CAP_LBR_FMT);
@@ -68,11 +57,8 @@ int main(int argc, char *argv[])
 
 	TEST_REQUIRE(kvm_cpu_has(X86_FEATURE_PDCM));
 
-	TEST_REQUIRE(kvm_get_cpuid_max_basic() >= 0xa);
-	entry_a_0 = kvm_get_supported_cpuid_entry(0xa);
-
-	eax.full = entry_a_0->eax;
-	__TEST_REQUIRE(eax.split.version_id, "PMU is not supported by the vCPU");
+	TEST_REQUIRE(kvm_cpu_has_p(X86_PROPERTY_PMU_VERSION));
+	TEST_REQUIRE(kvm_cpu_property(X86_PROPERTY_PMU_VERSION) > 0);
 
 	/* testcase 1, set capabilities when we have PDCM bit */
 	vcpu_set_msr(vcpu, MSR_IA32_PERF_CAPABILITIES, PMU_CAP_FW_WRITES);
@@ -91,11 +77,17 @@ int main(int argc, char *argv[])
 	vcpu_set_msr(vcpu, MSR_IA32_PERF_CAPABILITIES, host_cap.lbr_format);
 	ASSERT_EQ(vcpu_get_msr(vcpu, MSR_IA32_PERF_CAPABILITIES), (u64)host_cap.lbr_format);
 
-	/* testcase 3, check invalid LBR format is rejected */
-	/* Note, on Arch LBR capable platforms, LBR_FMT in perf capability msr is 0x3f,
-	 * to avoid the failure, use a true invalid format 0x30 for the test. */
-	ret = _vcpu_set_msr(vcpu, MSR_IA32_PERF_CAPABILITIES, 0x30);
-	TEST_ASSERT(ret == 0, "Bad PERF_CAPABILITIES didn't fail.");
+	/*
+	 * Testcase 3, check that an "invalid" LBR format is rejected.  Only an
+	 * exact match of the host's format (and 0/disabled) is allowed.
+	 */
+	for (val = 1; val <= PMU_CAP_LBR_FMT; val++) {
+		if (val == (host_cap.capabilities & PMU_CAP_LBR_FMT))
+			continue;
+
+		ret = _vcpu_set_msr(vcpu, MSR_IA32_PERF_CAPABILITIES, val);
+		TEST_ASSERT(!ret, "Bad LBR FMT = 0x%lx didn't fail", val);
+	}
 
 	printf("Completed perf capability tests.\n");
 	kvm_vm_free(vm);
