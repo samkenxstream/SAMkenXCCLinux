@@ -862,19 +862,18 @@ static umode_t auth_attr_is_visible(struct kobject *kobj,
 	struct tlmi_pwd_setting *setting = to_tlmi_pwd_setting(kobj);
 
 	/* We only want to display level and index settings on HDD/NVMe */
-	if ((attr == (struct attribute *)&auth_index) ||
-			(attr == (struct attribute *)&auth_level)) {
+	if (attr == &auth_index.attr || attr == &auth_level.attr) {
 		if ((setting == tlmi_priv.pwd_hdd) || (setting == tlmi_priv.pwd_nvme))
 			return attr->mode;
 		return 0;
 	}
 
 	/* We only display certificates on Admin account, if supported */
-	if ((attr == (struct attribute *)&auth_certificate) ||
-			(attr == (struct attribute *)&auth_signature) ||
-			(attr == (struct attribute *)&auth_save_signature) ||
-			(attr == (struct attribute *)&auth_cert_thumb) ||
-			(attr == (struct attribute *)&auth_cert_to_password)) {
+	if (attr == &auth_certificate.attr ||
+	    attr == &auth_signature.attr ||
+	    attr == &auth_save_signature.attr ||
+	    attr == &auth_cert_thumb.attr ||
+	    attr == &auth_cert_to_password.attr) {
 		if ((setting == tlmi_priv.pwd_admin) && tlmi_priv.certificate_support)
 			return attr->mode;
 		return 0;
@@ -920,7 +919,7 @@ static ssize_t display_name_show(struct kobject *kobj, struct kobj_attribute *at
 static ssize_t current_value_show(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	struct tlmi_attr_setting *setting = to_tlmi_attr_setting(kobj);
-	char *item, *value;
+	char *item, *value, *p;
 	int ret;
 
 	ret = tlmi_setting(setting->index, &item, LENOVO_BIOS_SETTING_GUID);
@@ -930,10 +929,15 @@ static ssize_t current_value_show(struct kobject *kobj, struct kobj_attribute *a
 	/* validate and split from `item,value` -> `value` */
 	value = strpbrk(item, ",");
 	if (!value || value == item || !strlen(value + 1))
-		return -EINVAL;
-
-	ret = sysfs_emit(buf, "%s\n", value + 1);
+		ret = -EINVAL;
+	else {
+		/* On Workstations remove the Options part after the value */
+		p = strchrnul(value, ';');
+		*p = '\0';
+		ret = sysfs_emit(buf, "%s\n", value + 1);
+	}
 	kfree(item);
+
 	return ret;
 }
 
@@ -1074,33 +1078,6 @@ static const struct attribute_group tlmi_attr_group = {
 	.attrs = tlmi_attrs,
 };
 
-static ssize_t tlmi_attr_show(struct kobject *kobj, struct attribute *attr,
-				    char *buf)
-{
-	struct kobj_attribute *kattr;
-
-	kattr = container_of(attr, struct kobj_attribute, attr);
-	if (kattr->show)
-		return kattr->show(kobj, kattr, buf);
-	return -EIO;
-}
-
-static ssize_t tlmi_attr_store(struct kobject *kobj, struct attribute *attr,
-				     const char *buf, size_t count)
-{
-	struct kobj_attribute *kattr;
-
-	kattr = container_of(attr, struct kobj_attribute, attr);
-	if (kattr->store)
-		return kattr->store(kobj, kattr, buf, count);
-	return -EIO;
-}
-
-static const struct sysfs_ops tlmi_kobj_sysfs_ops = {
-	.show	= tlmi_attr_show,
-	.store	= tlmi_attr_store,
-};
-
 static void tlmi_attr_setting_release(struct kobject *kobj)
 {
 	struct tlmi_attr_setting *setting = to_tlmi_attr_setting(kobj);
@@ -1118,12 +1095,12 @@ static void tlmi_pwd_setting_release(struct kobject *kobj)
 
 static const struct kobj_type tlmi_attr_setting_ktype = {
 	.release        = &tlmi_attr_setting_release,
-	.sysfs_ops	= &tlmi_kobj_sysfs_ops,
+	.sysfs_ops	= &kobj_sysfs_ops,
 };
 
 static const struct kobj_type tlmi_pwd_setting_ktype = {
 	.release        = &tlmi_pwd_setting_release,
-	.sysfs_ops	= &tlmi_kobj_sysfs_ops,
+	.sysfs_ops	= &kobj_sysfs_ops,
 };
 
 static ssize_t pending_reboot_show(struct kobject *kobj, struct kobj_attribute *attr,
@@ -1380,7 +1357,6 @@ static struct tlmi_pwd_setting *tlmi_create_auth(const char *pwd_type,
 
 static int tlmi_analyze(void)
 {
-	acpi_status status;
 	int i, ret;
 
 	if (wmi_has_guid(LENOVO_SET_BIOS_SETTINGS_GUID) &&
@@ -1417,8 +1393,8 @@ static int tlmi_analyze(void)
 		char *p;
 
 		tlmi_priv.setting[i] = NULL;
-		status = tlmi_setting(i, &item, LENOVO_BIOS_SETTING_GUID);
-		if (ACPI_FAILURE(status))
+		ret = tlmi_setting(i, &item, LENOVO_BIOS_SETTING_GUID);
+		if (ret)
 			break;
 		if (!item)
 			break;
@@ -1457,10 +1433,10 @@ static int tlmi_analyze(void)
 			 * name string.
 			 * Try and pull that out if it's available.
 			 */
-			char *item, *optstart, *optend;
+			char *optitem, *optstart, *optend;
 
-			if (!tlmi_setting(setting->index, &item, LENOVO_BIOS_SETTING_GUID)) {
-				optstart = strstr(item, "[Optional:");
+			if (!tlmi_setting(setting->index, &optitem, LENOVO_BIOS_SETTING_GUID)) {
+				optstart = strstr(optitem, "[Optional:");
 				if (optstart) {
 					optstart += strlen("[Optional:");
 					optend = strstr(optstart, "]");
@@ -1469,6 +1445,7 @@ static int tlmi_analyze(void)
 							kstrndup(optstart, optend - optstart,
 									GFP_KERNEL);
 				}
+				kfree(optitem);
 			}
 		}
 		/*

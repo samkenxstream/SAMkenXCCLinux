@@ -140,32 +140,28 @@ int ivpu_pm_suspend_cb(struct device *dev)
 {
 	struct drm_device *drm = dev_get_drvdata(dev);
 	struct ivpu_device *vdev = to_ivpu_device(drm);
-	int ret;
+	unsigned long timeout;
 
 	ivpu_dbg(vdev, PM, "Suspend..\n");
 
-	ret = ivpu_suspend(vdev);
-	if (ret && vdev->pm->suspend_reschedule_counter) {
-		ivpu_dbg(vdev, PM, "Failed to enter idle, rescheduling suspend, retries left %d\n",
-			 vdev->pm->suspend_reschedule_counter);
-		pm_schedule_suspend(dev, vdev->timeout.reschedule_suspend);
-		vdev->pm->suspend_reschedule_counter--;
-		return -EBUSY;
-	} else if (!vdev->pm->suspend_reschedule_counter) {
-		ivpu_warn(vdev, "Failed to enter idle, force suspend\n");
-		ivpu_pm_prepare_cold_boot(vdev);
-	} else {
-		ivpu_pm_prepare_warm_boot(vdev);
+	timeout = jiffies + msecs_to_jiffies(vdev->timeout.tdr);
+	while (!ivpu_hw_is_idle(vdev)) {
+		cond_resched();
+		if (time_after_eq(jiffies, timeout)) {
+			ivpu_err(vdev, "Failed to enter idle on system suspend\n");
+			return -EBUSY;
+		}
 	}
 
-	vdev->pm->suspend_reschedule_counter = PM_RESCHEDULE_LIMIT;
+	ivpu_suspend(vdev);
+	ivpu_pm_prepare_warm_boot(vdev);
 
 	pci_save_state(to_pci_dev(dev));
 	pci_set_power_state(to_pci_dev(dev), PCI_D3hot);
 
 	ivpu_dbg(vdev, PM, "Suspend done.\n");
 
-	return ret;
+	return 0;
 }
 
 int ivpu_pm_resume_cb(struct device *dev)
@@ -243,8 +239,6 @@ int ivpu_rpm_get(struct ivpu_device *vdev)
 {
 	int ret;
 
-	ivpu_dbg(vdev, RPM, "rpm_get count %d\n", atomic_read(&vdev->drm.dev->power.usage_count));
-
 	ret = pm_runtime_resume_and_get(vdev->drm.dev);
 	if (!drm_WARN_ON(&vdev->drm, ret < 0))
 		vdev->pm->suspend_reschedule_counter = PM_RESCHEDULE_LIMIT;
@@ -254,8 +248,6 @@ int ivpu_rpm_get(struct ivpu_device *vdev)
 
 void ivpu_rpm_put(struct ivpu_device *vdev)
 {
-	ivpu_dbg(vdev, RPM, "rpm_put count %d\n", atomic_read(&vdev->drm.dev->power.usage_count));
-
 	pm_runtime_mark_last_busy(vdev->drm.dev);
 	pm_runtime_put_autosuspend(vdev->drm.dev);
 }
@@ -325,16 +317,10 @@ void ivpu_pm_enable(struct ivpu_device *vdev)
 	pm_runtime_allow(dev);
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_autosuspend(dev);
-
-	ivpu_dbg(vdev, RPM, "Enable RPM count %d\n", atomic_read(&dev->power.usage_count));
 }
 
 void ivpu_pm_disable(struct ivpu_device *vdev)
 {
-	struct device *dev = vdev->drm.dev;
-
-	ivpu_dbg(vdev, RPM, "Disable RPM count %d\n", atomic_read(&dev->power.usage_count));
-
 	pm_runtime_get_noresume(vdev->drm.dev);
 	pm_runtime_forbid(vdev->drm.dev);
 }
